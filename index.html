@@ -2,17 +2,38 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <base href="/Mbanking/">
     <link rel="icon" type="image/svg+xml" href="/Mbanking/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
     <title>mbanking</title>
-    <script type="module" crossorigin src="/Mbanking/assets/index-BHMAJCFQ.js"></script>
+    <script type="module" crossorigin src="/Mbanking/assets/index-hsCRuSCN.js"></script>
     <link rel="modulepreload" crossorigin href="/Mbanking/assets/vue-vendor-CNBI5oZB.js">
     <link rel="modulepreload" crossorigin href="/Mbanking/assets/supabase-vendor-CywEAasM.js">
     <link rel="stylesheet" crossorigin href="/Mbanking/assets/index-F5WZZ_72.css">
   </head>
   <body>
+    <script>
+      // If redirected here from GitHub Pages 404, there's a `?p=/path` param.
+      // Replace the current history entry to the original SPA path so router can handle it.
+      (function(){
+        try {
+          var params = new URLSearchParams(location.search);
+          var p = params.get('p');
+          if (p) {
+            var base = document.querySelector('base')?.getAttribute('href') || '/';
+            if (base.endsWith('/') && p.startsWith('/')) {
+              history.replaceState({}, '', base + p.slice(1) + location.hash);
+            } else {
+              history.replaceState({}, '', base + p + location.hash);
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to handle redirect param', e);
+        }
+      })();
+    </script>
     <div id="app"></div>
   </body>
 </html>
