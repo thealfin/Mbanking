@@ -1,0 +1,22 @@
+# Node modules
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# PHP Vendor & Logs
+Backend/Route Mbanking/vendor/
+Backend/Route Mbanking/logs/*.log
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
