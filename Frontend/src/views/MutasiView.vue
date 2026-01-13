@@ -156,6 +156,7 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue';
+import { supabase } from '@/lib/supabase';
 
 // 1. State
 const transactions = ref([]);
@@ -169,34 +170,75 @@ const selectedTransaction = ref(null);
 const userId = 4; 
 
 // List Tipe Transaksi
-const transactionTypes = ['TRANSFER', 'TOPUP', 'PAYMENT', 'PENARIKAN', 'DEPOSIT', 'TRANSFER MASUK', 'TRANSFER KELUAR'];
+const transactionTypes = ['TRANSFER', 'TOPUP', 'PAYMENT', 'PENARIKAN', 'DEPOSIT'];
 
 // 2. Fetch Data
 const getMutationData = async () => {
     loading.value = true;
     try {
-        // Ambil Data Dashboard Spesifik User (Lebih Efisien)
-        const resDashboard = await fetch(`/api/dashboard/${userId}`);
-        const dataDash = await resDashboard.json();
+        // 1. Ambil Data Akun User
+        const { data: accountData, error: accountError } = await supabase
+            .from('accounts')
+            .select(`
+                account_id,
+                users (full_name)
+            `)
+            .eq('user_id', userId)
+            .single();
 
-        if (dataDash.status === 'success') {
-            const myAccount = dataDash.data.account;
-            
-            if (myAccount) {
-                accountName.value = myAccount.full_name;
-                const myAccountId = myAccount.account_id;
+        if (accountError) throw accountError;
+        
+        if (accountData) {
+            accountName.value = accountData.users.full_name;
+            const myAccountId = accountData.account_id;
 
-                // Ambil Mutasi berdasarkan Account ID yang ditemukan
-                const resMutasi = await fetch(`/api/mutasi/${myAccountId}`);
-                const dataMutasi = await resMutasi.json();
+            // 2. Ambil Mutasi dengan Join Transaksi & Akun
+            const { data: mutasiData, error: mutasiError } = await supabase
+                .from('account_mutations')
+                .select(`
+                    *,
+                    transactions (
+                        *,
+                        ref_banks (bank_name),
+                        source:accounts!transactions_source_account_id_fkey (
+                            account_number,
+                            users (full_name)
+                        ),
+                        destination:accounts!transactions_destination_account_id_fkey (
+                            account_number,
+                            users (full_name)
+                        )
+                    )
+                `)
+                .eq('account_id', myAccountId)
+                .order('created_at', { ascending: false });
 
-                if (dataMutasi.status === 'success') {
-                    transactions.value = dataMutasi.data;
-                }
+            if (mutasiError) throw mutasiError;
+
+            if (mutasiData) {
+                transactions.value = mutasiData.map(m => {
+                    const t = m.transactions;
+                    return {
+                        ...m,
+                        transaction_code: t.transaction_code,
+                        transaction_type: t.transaction_type,
+                        transaction_status: t.status,
+                        description: t.description || (m.mutation_type === 'CREDIT' ? 'Transfer Masuk' : 'Transfer Keluar'),
+                        amount: parseFloat(m.amount),
+                        label: m.mutation_type === 'CREDIT' ? 'Masuk' : 'Keluar',
+                        // Data untuk Detail
+                        sender_name: t.source?.users?.full_name || 'System',
+                        sender_account: t.source?.account_number || '-',
+                        recipient_name: t.destination?.users?.full_name || t.account_destination || 'Penerima Luar',
+                        recipient_account: t.destination?.account_number || t.account_destination || '-',
+                        bank_name: t.ref_banks?.bank_name || 'Bank Lain',
+                        bank_id: t.bank_code || '-'
+                    };
+                });
             }
         }
     } catch (error) {
-        console.error("Gagal mengambil data:", error);
+        console.error("Gagal mengambil data dari Supabase:", error.message);
     } finally {
         loading.value = false;
     }

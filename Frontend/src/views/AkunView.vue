@@ -61,6 +61,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue';
+import { supabase } from '@/lib/supabase';
 
 // 1. Definisikan State Lokal
 const user = ref({});
@@ -70,16 +71,23 @@ const userId = 4; // ID statis sesuai request sebelumnya (bisa diubah nanti ambi
 // 2. Fungsi Fetch Data Lokal
 const fetchData = async () => {
     try {
-        const response = await fetch('/api/dashboard/all');
-        const result = await response.json();
+        const { data, error } = await supabase
+            .from('accounts')
+            .select(`
+                *,
+                users (*)
+            `)
+            .eq('user_id', userId)
+            .single();
         
-        if (result.status === 'success') {
-            // Filter data sesuai user_id
-            user.value = result.data.users.find(u => u.user_id == userId) || {};
-            account.value = result.data.accounts.find(a => a.user_id == userId) || {};
+        if (error) throw error;
+        
+        if (data) {
+            account.value = data;
+            user.value = data.users;
         }
     } catch (error) {
-        console.error("Gagal ambil data profil:", error);
+        console.error("Gagal ambil data profil dari Supabase:", error.message);
     }
 };
 

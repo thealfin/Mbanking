@@ -45,11 +45,10 @@
 import { onMounted, onUnmounted, ref } from 'vue';
 import { Html5Qrcode } from "html5-qrcode";
 import { useRouter } from 'vue-router';
+import { supabase } from '@/lib/supabase';
 
 // 1. State & Router
 const router = useRouter();
-// HAPUS INJECT GLOBAL STATE
-// const globalState = inject('globalState'); 
 
 // GANTI DENGAN LOCAL STATE
 const account = ref(null); 
@@ -64,16 +63,18 @@ let html5QrCode = null;
 // 2. Fungsi Fetch Data Akun (Local)
 const fetchAccountData = async () => {
     try {
-        const response = await fetch('/api/dashboard/all');
-        const result = await response.json();
+        const { data, error } = await supabase
+            .from('accounts')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
         
-        if (result.status === 'success') {
-            // Cari akun milik user ID 4
-            const foundAccount = result.data.accounts.find(a => a.user_id == userId);
-            account.value = foundAccount || null;
+        if (error) throw error;
+        if (data) {
+            account.value = data;
         }
     } catch (error) {
-        console.error("Gagal memuat data akun:", error);
+        console.error("Gagal memuat data akun dari Supabase:", error.message);
         isError.value = true;
         message.value = "Gagal memuat data rekening. Cek koneksi.";
     }
@@ -109,31 +110,65 @@ const processPayment = async (qrDataString) => {
             throw new Error("QR Code tidak valid (Kurang data)");
         }
 
-        // C. Kirim ke Backend (Gunakan ID dari Local State)
-        const payload = {
-            source_account_id: account.value.account_id, // AMBIL DARI LOCAL STATE
-            amount: qrData.amount,
-            merchant_name: qrData.merchant_name
-        };
+        const amount = parseFloat(qrData.amount);
+        if (amount > parseFloat(account.value.balance)) {
+            throw new Error("Saldo tidak mencukupi untuk pembayaran ini.");
+        }
 
-        const response = await fetch('/api/qris/pay', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+        // C. Proses Pembayaran di Supabase
+        const trxCode = 'QRIS-' + Math.random().toString(36).substr(2, 9).toUpperCase();
+
+        // 1. Simpan Transaksi
+        const { data: trxData, error: trxError } = await supabase
+            .from('transactions')
+            .insert({
+                transaction_code: trxCode,
+                source_account_id: account.value.account_id,
+                amount: amount,
+                transaction_type: 'PAYMENT',
+                description: `Pembayaran QRIS ke ${qrData.merchant_name}`,
+                status: 'SUCCESS'
+            })
+            .select()
+            .single();
+
+        if (trxError) throw trxError;
+
+        // 2. Update Saldo
+        const newBalance = parseFloat(account.value.balance) - amount;
+        const { error: balanceError } = await supabase
+            .from('accounts')
+            .update({ balance: newBalance })
+            .eq('account_id', account.value.account_id);
+
+        if (balanceError) throw balanceError;
+
+        // 3. Tambah Mutasi
+        const { error: mutationError } = await supabase
+            .from('account_mutations')
+            .insert({
+                account_id: account.value.account_id,
+                transaction_id: trxData.transaction_id,
+                mutation_type: 'DEBIT',
+                amount: amount,
+                balance_after: newBalance
+            });
+
+        if (mutationError) throw mutationError;
+
+        // 4. Log Aktivitas
+        await supabase.from('activity_logs').insert({
+            user_id: userId,
+            activity_type: 'PAYMENT_QRIS',
+            description: `Berhasil bayar QRIS ke ${qrData.merchant_name} sebesar Rp ${amount}`
         });
 
-        const result = await response.json();
-
-        if (result.status === 'success') {
-            isError.value = false;
-            message.value = `Berhasil bayar Rp ${qrData.amount}`;
-            
-            setTimeout(() => {
-                router.push('/');
-            }, 2000);
-        } else {
-            throw new Error(result.message || "Pembayaran Gagal");
-        }
+        isError.value = false;
+        message.value = `Berhasil bayar Rp ${amount}`;
+        
+        setTimeout(() => {
+            router.push('/');
+        }, 2000);
 
     } catch (error) {
         isError.value = true;

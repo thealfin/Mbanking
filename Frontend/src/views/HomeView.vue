@@ -177,10 +177,11 @@
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import { useRouter } from 'vue-router'; // UPDATE: Import Vue Router
+import { useRouter } from 'vue-router'; 
+import { supabase } from '@/lib/supabase';
 
 // --- ROUTER SETUP ---
-const router = useRouter(); // UPDATE: Init Router
+const router = useRouter(); 
 
 const navigateTo = (path) => {
   if (path) {
@@ -195,40 +196,67 @@ const recentTransactions = ref([]);
 const isLoading = ref(true);
 const showBalance = ref(false);
 const greeting = ref("");
-const userId = 4;
+const userId = 4; // Tetap gunakan ID 4 (Mike Wheeler) sesuai data m-banking.sql
 
-// 2. Fungsi Fetch Data Lokal
+// 2. Fungsi Fetch Data via Supabase
 const fetchData = async () => {
     try {
         isLoading.value = true;
-        // Gunakan endpoint dashboard spesifik user yang lebih efisien
-        const response = await fetch(`/api/dashboard/${userId}`);
-        const result = await response.json();
         
-        if (result.status === 'success') {
-            const data = result.data;
-            user.value = {
-                full_name: data.account.full_name,
-                email: data.account.email
-            };
-            
-            account.value = data.account;
+        // 1. Ambil data User & Account (Join)
+        const { data: accountData, error: accountError } = await supabase
+            .from('accounts')
+            .select(`
+                *,
+                users (
+                    full_name,
+                    email
+                )
+            `)
+            .eq('user_id', userId)
+            .single();
 
-            if (data.recent_mutations) {
-                recentTransactions.value = data.recent_mutations.map(m => {
-                    return {
-                        id: m.id,
-                        type: m.transaction_type || (m.mutation_type === 'CREDIT' ? 'TRANSFER MASUK' : 'TRANSFER KELUAR'),
-                        description: m.trx_desc || m.description || (m.mutation_type === 'CREDIT' ? 'Uang Masuk' : 'Uang Keluar'),
-                        amount: parseFloat(m.amount),
-                        date: formatDateShort(m.created_at),
-                        is_income: m.mutation_type === 'CREDIT'
-                    };
-                });
-            }
+        if (accountError) throw accountError;
+
+        if (accountData) {
+            user.value = {
+                full_name: accountData.users.full_name,
+                email: accountData.users.email
+            };
+            account.value = accountData;
         }
+
+        // 2. Ambil Mutasi Terakhir
+        const { data: mutationData, error: mutationError } = await supabase
+            .from('account_mutations')
+            .select(`
+                *,
+                transactions (
+                    transaction_type,
+                    description
+                )
+            `)
+            .eq('account_id', accountData.account_id)
+            .order('created_at', { ascending: false })
+            .limit(5);
+
+        if (mutationError) throw mutationError;
+
+        if (mutationData) {
+            recentTransactions.value = mutationData.map(m => {
+                return {
+                    id: m.mutation_id,
+                    type: m.transactions?.transaction_type || (m.mutation_type === 'CREDIT' ? 'TOPUP' : 'PAYMENT'),
+                    description: m.transactions?.description || (m.mutation_type === 'CREDIT' ? 'Transfer Masuk' : 'Transfer Keluar'),
+                    amount: parseFloat(m.amount),
+                    date: formatDateShort(m.created_at),
+                    is_income: m.mutation_type === 'CREDIT'
+                };
+            });
+        }
+        
     } catch (error) {
-        console.error("Gagal ambil data home:", error);
+        console.error("Gagal ambil data home dari Supabase:", error.message);
     } finally {
         isLoading.value = false;
     }

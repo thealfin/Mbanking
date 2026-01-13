@@ -48,6 +48,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue';
+import { supabase } from '@/lib/supabase';
 
 // 1. State
 const logs = ref([]);
@@ -58,14 +59,19 @@ const userId = 4; // user ID statis sesuai request sebelumnya (bisa diubah nanti
 const fetchLogs = async () => {
     loading.value = true;
     try {
-        const response = await fetch(`/api/messages/${userId}`);
-        const result = await response.json();
+        const { data, error } = await supabase
+            .from('activity_logs')
+            .select('*')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false });
         
-        if (result.status === 'success') {
-            logs.value = result.data;
+        if (error) throw error;
+        
+        if (data) {
+            logs.value = data;
         }
     } catch (e) {
-        console.error("Pesan: Gagal mengambil data", e);
+        console.error("Pesan: Gagal mengambil data dari Supabase", e.message);
     } finally {
         loading.value = false;
     }

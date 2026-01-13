@@ -394,6 +394,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import { supabase } from '@/lib/supabase';
 
 const router = useRouter();
 
@@ -568,16 +569,19 @@ const confirmDelete = async () => {
 
   try {
     isDeleting.value = true;
-    await fetch(`/api/beneficiaries/delete/${itemToDelete.value.id}`, { 
-        method: 'DELETE' 
-    });
+    const { error } = await supabase
+        .from('saved_beneficiaries')
+        .delete()
+        .eq('id', itemToDelete.value.id);
+    
+    if (error) throw error;
     
     await loadTransferData();
     showDeleteModal.value = false;
     itemToDelete.value = null;
     
   } catch (e) {
-    console.error(e);
+    console.error("Error delete contact:", e);
     showAlert("Gagal Hapus", "Terjadi kesalahan saat menghapus kontak.", "error");
   } finally {
     isDeleting.value = false;
@@ -588,40 +592,75 @@ const confirmDelete = async () => {
 
 const loadTransferData = async () => {
     try {
-        const resBanks = await fetch('/api/banks');
-        const dataBanks = await resBanks.json();
-        if(dataBanks.status === 'success') {
-            banks.value = dataBanks.data.map(b => ({
+        // 1. Ambil Daftar Bank
+        const { data: dataBanks, error: banksError } = await supabase
+            .from('ref_banks')
+            .select('bank_code, bank_name')
+            .eq('is_active', 1);
+        
+        if (banksError) throw banksError;
+        if (dataBanks) {
+            banks.value = dataBanks.map(b => ({
                 code: b.bank_code,
                 name: b.bank_name
             }));
         }
 
-        const resRecent = await fetch(`/api/transactions/recent/${userId}`);
-        const dataRecent = await resRecent.json();
-        if(dataRecent.status === 'success') {
-            recentTransfers.value = dataRecent.data.map(r => ({
-                id: r.transaction_id,
-                name: r.beneficiary_name,
-                bank: r.bank_name,
-                number: r.account_destination,
-                destinationId: r.destination_account_id 
-            }));
+        // 2. Ambil Transfer Terakhir (Berdasarkan Mutasi Keluar)
+        // Kita ambil dari tabel transactions yang source_account_id nya adalah milik user ini
+        if (accountId.value) {
+            const { data: dataRecent, error: recentError } = await supabase
+                .from('transactions')
+                .select(`
+                    transaction_id,
+                    account_destination,
+                    destination_account_id,
+                    bank_code,
+                    ref_banks (bank_name),
+                    accounts!transactions_destination_account_id_fkey (
+                        users (full_name)
+                    )
+                `)
+                .eq('source_account_id', accountId.value)
+                .order('transaction_date', { ascending: false })
+                .limit(5);
+
+            if (recentError) throw recentError;
+            if (dataRecent) {
+                recentTransfers.value = dataRecent.map(r => ({
+                    id: r.transaction_id,
+                    name: r.accounts?.users?.full_name || 'Tanpa Nama',
+                    bank: r.ref_banks?.bank_name || 'Bank Unknown',
+                    number: r.account_destination,
+                    destinationId: r.destination_account_id
+                }));
+            }
         }
 
-        const resSaved = await fetch(`/api/beneficiaries/${userId}`);
-        const dataSaved = await resSaved.json();
-        if(dataSaved.status === 'success') {
-             savedContacts.value = dataSaved.data.map(s => ({
+        // 3. Ambil Daftar Tersimpan
+        const { data: dataSaved, error: savedError } = await supabase
+            .from('saved_beneficiaries')
+            .select(`
+                id,
+                bank_code,
+                account_number,
+                alias_name,
+                ref_banks (bank_name)
+            `)
+            .eq('user_id', userId);
+
+        if (savedError) throw savedError;
+        if (dataSaved) {
+            savedContacts.value = dataSaved.map(s => ({
                 id: s.id,
                 code: s.bank_code,
                 name: s.alias_name,
-                bank: s.bank_name, 
+                bank: s.ref_banks?.bank_name || 'Bank Unknown',
                 number: s.account_number
-             }));
+            }));
         }
     } catch (error) {
-        console.error("Gagal memuat data:", error);
+        console.error("Gagal memuat data dari Supabase:", error.message);
     }
 };
 
@@ -629,24 +668,39 @@ const validateAccount = async () => {
   if (!form.value.accountNumber) return;
   try {
     isLoading.value = true;
-    const response = await fetch(`/api/transactions/inquiry/${form.value.accountNumber}`);
-    const result = await response.json();
+    
+    // Cari akun berdasarkan nomor rekening
+    const { data, error } = await supabase
+        .from('accounts')
+        .select(`
+            account_id,
+            users (
+                full_name
+            )
+        `)
+        .eq('account_number', form.value.accountNumber)
+        .single();
 
-    if (result.status === 'success') {
-       inquiryResult.value = result.data;
-       
-       form.value.recipientName = result.data.full_name;
-       form.value.recipientId = result.data.account_id; 
-       
-       isSaveContactChecked.value = false;
-       contactAlias.value = result.data.full_name; 
-       
-    } else {
-       showAlert("Gagal Menemukan", "Rekening tidak ditemukan.", "error");
+    if (error || !data) {
+       showAlert("Gagal Menemukan", "Rekening tidak ditemukan atau tidak terdaftar.", "error");
        inquiryResult.value = null;
+       return;
     }
+
+    inquiryResult.value = { 
+        full_name: data.users.full_name,
+        account_id: data.account_id
+    };
+    
+    form.value.recipientName = data.users.full_name;
+    form.value.recipientId = data.account_id; 
+    
+    isSaveContactChecked.value = false;
+    contactAlias.value = data.users.full_name; 
+       
   } catch (e) {
-    showAlert("Koneksi Error", "Gagal menghubungi server.", "error");
+    console.error("Error validate account:", e);
+    showAlert("Koneksi Error", "Gagal menghubungi database.", "error");
   } finally {
     isLoading.value = false;
   }
@@ -655,10 +709,7 @@ const validateAccount = async () => {
 const saveContactToDb = async () => {
     if(!contactAlias.value) return showAlert("Perhatian", "Nama panggilan tidak boleh kosong", "warning");
     
-    // Validasi duplikasi: Cek apakah nomor rekening sudah ada di savedContacts
-    // Menggunakan loose equality (==) untuk mengantisipasi perbedaan tipe (string vs number)
     const isDuplicate = savedContacts.value.some(contact => contact.number == form.value.accountNumber);
-    
     if (isDuplicate) {
         showAlert("Sudah Tersimpan", "Nomor rekening ini sudah tersimpan di daftar kontak!", "warning");
         return;
@@ -666,30 +717,24 @@ const saveContactToDb = async () => {
 
     try {
         isSaving.value = true;
-        const payload = {
-            user_id: userId,
-            bank_code: form.value.bankCode || '001', 
-            account_number: form.value.accountNumber,
-            alias_name: contactAlias.value
-        };
+        const { error } = await supabase
+            .from('saved_beneficiaries')
+            .insert({
+                user_id: userId,
+                bank_code: form.value.bankCode || '001', 
+                account_number: form.value.accountNumber,
+                alias_name: contactAlias.value
+            });
 
-        const response = await fetch('/api/beneficiaries/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
+        if (error) throw error;
         
-        const result = await response.json();
-        if(result.status === 'success'){
-            // Tampilkan popup sukses alih-alih alert
-            showSaveSuccess.value = true;
-            isSaveContactChecked.value = false; 
-            loadTransferData(); 
-        } else {
-            showAlert("Gagal Simpan", result.message, "error");
-        }
+        showSaveSuccess.value = true;
+        isSaveContactChecked.value = false; 
+        loadTransferData(); 
+        
     } catch (e) {
-        showAlert("Error", "Gagal menyimpan kontak", "error");
+        console.error("Error save contact:", e);
+        showAlert("Error", "Gagal menyimpan kontak ke Supabase", "error");
     } finally {
         isSaving.value = false;
     }
@@ -698,44 +743,99 @@ const saveContactToDb = async () => {
 const submitTransfer = async () => {
   if (!accountId.value) return showAlert("Error Akun", "Akun pengirim tidak valid.", "error");
   if (!form.value.recipientId) return showAlert("Data Invalid", "Data penerima tidak valid, coba ulangi.", "error"); 
-  
+  if (parseFloat(form.value.amount) > userBalance.value) return showAlert("Saldo Kurang", "Saldo Anda tidak mencukupi untuk melakukan transfer ini.", "error");
+
   try {
     isLoading.value = true;
-    const payload = {
-      from_account_id: accountId.value,
-      to_account_id: form.value.recipientId, 
-      amount: parseFloat(form.value.amount),
-      description: form.value.description
+    const amount = parseFloat(form.value.amount);
+    const trxCode = 'TRX-' + Math.random().toString(36).substr(2, 9).toUpperCase();
+
+    // 1. Simpan Transaksi Utama
+    const { data: trxData, error: trxError } = await supabase
+        .from('transactions')
+        .insert({
+            transaction_code: trxCode,
+            source_account_id: accountId.value,
+            destination_account_id: form.value.recipientId,
+            bank_code: form.value.bankCode || '001',
+            account_destination: form.value.accountNumber,
+            amount: amount,
+            transaction_type: 'TRANSFER',
+            description: form.value.description,
+            status: 'SUCCESS'
+        })
+        .select()
+        .single();
+
+    if (trxError) throw trxError;
+
+    // 2. Update Saldo Pengirim
+    const newSenderBalance = userBalance.value - amount;
+    const { error: senderError } = await supabase
+        .from('accounts')
+        .update({ balance: newSenderBalance })
+        .eq('account_id', accountId.value);
+    
+    if (senderError) throw senderError;
+
+    // 3. Update Saldo Penerima
+    // Ambil saldo penerima dulu
+    const { data: recipientAcc, error: recipientAccError } = await supabase
+        .from('accounts')
+        .select('balance')
+        .eq('account_id', form.value.recipientId)
+        .single();
+    
+    if (recipientAccError) throw recipientAccError;
+    
+    const newRecipientBalance = parseFloat(recipientAcc.balance) + amount;
+    const { error: recipientUpdateError } = await supabase
+        .from('accounts')
+        .update({ balance: newRecipientBalance })
+        .eq('account_id', form.value.recipientId);
+    
+    if (recipientUpdateError) throw recipientUpdateError;
+
+    // 4. Tambah Mutasi (Debit untuk pengirim, Credit untuk penerima)
+    const { error: mutationError } = await supabase
+        .from('account_mutations')
+        .insert([
+            {
+                account_id: accountId.value,
+                transaction_id: trxData.transaction_id,
+                mutation_type: 'DEBIT',
+                amount: amount,
+                balance_after: newSenderBalance
+            },
+            {
+                account_id: form.value.recipientId,
+                transaction_id: trxData.transaction_id,
+                mutation_type: 'CREDIT',
+                amount: amount,
+                balance_after: newRecipientBalance
+            }
+        ]);
+
+    if (mutationError) throw mutationError;
+
+    // Sukses!
+    successData.value = {
+        trxCode: trxCode,
+        amount: amount,
+        date: new Date().toLocaleString('id-ID'),
+        recipient: form.value.recipientName,
+        bank: form.value.bankName,
+        account: form.value.accountNumber,
+        description: form.value.description
     };
-
-    const response = await fetch('/api/transactions/transfer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    const result = await response.json();
-
-    if (result.status === 'success') {
-      successData.value = {
-          trxCode: result.data.transaction_code,
-          amount: parseFloat(form.value.amount),
-          date: new Date().toLocaleString('id-ID'),
-          recipient: form.value.recipientName,
-          bank: form.value.bankName,
-          account: form.value.accountNumber,
-          description: form.value.description
-      };
-      
-      userBalance.value = parseFloat(result.data.balance_remaining);
-      showSuccess.value = true;
-      loadTransferData(); 
-    } else {
-      showAlert("Transfer Gagal", result.message, "error");
-    }
+    
+    userBalance.value = newSenderBalance;
+    showSuccess.value = true;
+    loadTransferData(); 
 
   } catch (error) {
-    showAlert("Server Error", "Terjadi kesalahan saat memproses transfer.", "error");
+    console.error("Error during transfer:", error);
+    showAlert("Server Error", "Terjadi kesalahan saat memproses transfer: " + error.message, "error");
   } finally {
     isLoading.value = false;
   }
@@ -766,17 +866,19 @@ const formatNumber = (num) => {
 
 const fetchUserData = async () => {
     try {
-        const response = await fetch('/api/dashboard/all');
-        const result = await response.json();
-        if (result.status === 'success') {
-            const foundAccount = result.data.accounts.find(a => a.user_id == userId);
-            if(foundAccount) {
-                userBalance.value = foundAccount.balance;
-                accountId.value = foundAccount.account_id;
-            }
+        const { data, error } = await supabase
+            .from('accounts')
+            .select('account_id, balance')
+            .eq('user_id', userId)
+            .single();
+
+        if (error) throw error;
+        if (data) {
+            userBalance.value = parseFloat(data.balance);
+            accountId.value = data.account_id;
         }
     } catch (error) {
-        console.error("Gagal ambil saldo:", error);
+        console.error("Gagal ambil saldo dari Supabase:", error.message);
     }
 };
 
