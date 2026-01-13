@@ -203,8 +203,8 @@ const fetchData = async () => {
     try {
         isLoading.value = true;
         
-        // 1. Ambil data User & Account (Join)
-        const { data: accountData, error: accountError } = await supabase
+        // 1. Ambil data User & Account (Coba join dulu)
+        let { data: accountData, error: accountError } = await supabase
             .from('accounts')
             .select(`
                 *,
@@ -216,18 +216,45 @@ const fetchData = async () => {
             .eq('user_id', userId)
             .single();
 
-        if (accountError) throw accountError;
+        // Jika join gagal, coba ambil data account saja
+        if (accountError) {
+            console.warn("Join users gagal, mencoba ambil data accounts saja...", accountError.message);
+            const { data: simpleAccount, error: simpleError } = await supabase
+                .from('accounts')
+                .select('*')
+                .eq('user_id', userId)
+                .single();
+            
+            if (simpleError) {
+                console.error("Simple fetch accounts juga gagal:", simpleError.message);
+                throw simpleError;
+            }
+            accountData = simpleAccount;
+            
+            // Coba ambil user secara terpisah
+            const { data: userData } = await supabase
+                .from('users')
+                .select('full_name, email')
+                .eq('user_id', userId)
+                .single();
+            
+            if (userData) {
+                accountData.users = userData;
+            }
+        }
 
         if (accountData) {
             user.value = {
-                full_name: accountData.users.full_name,
-                email: accountData.users.email
+                full_name: accountData.users?.full_name || 'User Tidak Dikenal',
+                email: accountData.users?.email || ''
             };
             account.value = accountData;
+        } else {
+            throw new Error("Data akun tidak ditemukan.");
         }
 
-        // 2. Ambil Mutasi Terakhir
-        const { data: mutationData, error: mutationError } = await supabase
+        // 2. Ambil Mutasi Terakhir (Coba join dulu)
+        let { data: mutationData, error: mutationError } = await supabase
             .from('account_mutations')
             .select(`
                 *,
@@ -240,7 +267,22 @@ const fetchData = async () => {
             .order('created_at', { ascending: false })
             .limit(5);
 
-        if (mutationError) throw mutationError;
+        // Jika join gagal, ambil data mutasi saja
+        if (mutationError) {
+            console.warn("Join transactions gagal, ambil data mutasi saja...", mutationError.message);
+            const { data: simpleMutasi, error: simpleMutasiError } = await supabase
+                .from('account_mutations')
+                .select('*')
+                .eq('account_id', accountData.account_id)
+                .order('created_at', { ascending: false })
+                .limit(5);
+            
+            if (simpleMutasiError) {
+                console.error("Fetch mutasi gagal:", simpleMutasiError.message);
+                throw simpleMutasiError;
+            }
+            mutationData = simpleMutasi;
+        }
 
         if (mutationData) {
             recentTransactions.value = mutationData.map(m => {

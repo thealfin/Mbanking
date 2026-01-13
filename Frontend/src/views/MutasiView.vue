@@ -177,7 +177,7 @@ const getMutationData = async () => {
     loading.value = true;
     try {
         // 1. Ambil Data Akun User
-        const { data: accountData, error: accountError } = await supabase
+        let { data: accountData, error: accountError } = await supabase
             .from('accounts')
             .select(`
                 account_id,
@@ -186,14 +186,30 @@ const getMutationData = async () => {
             .eq('user_id', userId)
             .single();
 
-        if (accountError) throw accountError;
+        if (accountError) {
+            console.warn("Join accounts-users gagal di mutasi, fetch terpisah...");
+            const { data: accData, error: accError } = await supabase
+                .from('accounts')
+                .select('account_id')
+                .eq('user_id', userId)
+                .single();
+            if (accError) throw accError;
+            accountData = accData;
+
+            const { data: usrData } = await supabase
+                .from('users')
+                .select('full_name')
+                .eq('user_id', userId)
+                .single();
+            if (usrData) accountData.users = usrData;
+        }
         
         if (accountData) {
-            accountName.value = accountData.users.full_name;
+            accountName.value = accountData.users?.full_name || 'Rekening';
             const myAccountId = accountData.account_id;
 
-            // 2. Ambil Mutasi dengan Join Transaksi & Akun
-            const { data: mutasiData, error: mutasiError } = await supabase
+            // 2. Ambil Mutasi (Coba join lengkap)
+            let { data: mutasiData, error: mutasiError } = await supabase
                 .from('account_mutations')
                 .select(`
                     *,
@@ -213,23 +229,34 @@ const getMutationData = async () => {
                 .eq('account_id', myAccountId)
                 .order('created_at', { ascending: false });
 
-            if (mutasiError) throw mutasiError;
+            // Jika join kompleks gagal (sering terjadi karena nama FK), coba ambil data mentah
+            if (mutasiError) {
+                console.warn("Join mutasi kompleks gagal, fetch data dasar...", mutasiError.message);
+                const { data: simpleMutasi, error: simpleError } = await supabase
+                    .from('account_mutations')
+                    .select('*')
+                    .eq('account_id', myAccountId)
+                    .order('created_at', { ascending: false });
+                
+                if (simpleError) throw simpleError;
+                mutasiData = simpleMutasi;
+            }
 
             if (mutasiData) {
                 transactions.value = mutasiData.map(m => {
-                    const t = m.transactions;
+                    const t = m.transactions || {};
                     return {
                         ...m,
-                        transaction_code: t.transaction_code,
-                        transaction_type: t.transaction_type,
-                        transaction_status: t.status,
+                        transaction_code: t.transaction_code || '-',
+                        transaction_type: t.transaction_type || (m.mutation_type === 'CREDIT' ? 'TOPUP' : 'PAYMENT'),
+                        transaction_status: t.status || 'SUCCESS',
                         description: t.description || (m.mutation_type === 'CREDIT' ? 'Transfer Masuk' : 'Transfer Keluar'),
                         amount: parseFloat(m.amount),
                         label: m.mutation_type === 'CREDIT' ? 'Masuk' : 'Keluar',
-                        // Data untuk Detail
+                        // Data untuk Detail (Safe Access)
                         sender_name: t.source?.users?.full_name || 'System',
                         sender_account: t.source?.account_number || '-',
-                        recipient_name: t.destination?.users?.full_name || t.account_destination || 'Penerima Luar',
+                        recipient_name: t.destination?.users?.full_name || t.account_destination || 'Penerima',
                         recipient_account: t.destination?.account_number || t.account_destination || '-',
                         bank_name: t.ref_banks?.bank_name || 'Bank Lain',
                         bank_id: t.bank_code || '-'

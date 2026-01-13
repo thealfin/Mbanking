@@ -71,7 +71,7 @@ const userId = 4; // ID statis sesuai request sebelumnya (bisa diubah nanti ambi
 // 2. Fungsi Fetch Data Lokal
 const fetchData = async () => {
     try {
-        const { data, error } = await supabase
+        let { data, error } = await supabase
             .from('accounts')
             .select(`
                 *,
@@ -80,7 +80,28 @@ const fetchData = async () => {
             .eq('user_id', userId)
             .single();
         
-        if (error) throw error;
+        // Fallback jika join gagal
+        if (error) {
+            console.warn("Join users gagal di profil, mencoba fetch terpisah...", error.message);
+            const { data: accData, error: accError } = await supabase
+                .from('accounts')
+                .select('*')
+                .eq('user_id', userId)
+                .single();
+            
+            if (accError) throw accError;
+            data = accData;
+
+            const { data: usrData } = await supabase
+                .from('users')
+                .select('*')
+                .eq('user_id', userId)
+                .single();
+            
+            if (usrData) {
+                data.users = usrData;
+            }
+        }
         
         if (data) {
             account.value = data;
